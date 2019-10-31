@@ -13,7 +13,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonConfiguration
-import kotlinx.serialization.parse
+import org.slf4j.LoggerFactory
 import java.io.File
 import java.util.*
 import kotlin.system.exitProcess
@@ -47,9 +47,14 @@ data class ClashVMess(
     val alterId: Int,
     val cipher: String,
     val tls: Boolean,
+    @Optional
     val network: String?,
+    @SerialName("ws-path")
+    @Optional
     val wsPath: String?,
+    @SerialName("ws-headers")
     val wsHeaders: Map<String, String>,
+    @SerialName("skip-cert-verify")
     val skipCertVerify: Boolean
 )
 
@@ -107,16 +112,17 @@ class V2ray2Clash : CliktCommand() {
 
     override fun run() {
         if (subUrl.startsWith("https://") or subUrl.startsWith("http://")) {
-            // Loading Template
-
             runBlocking {
-                val clashVMesses = readSubscription(subUrl).filter {
+                val clashVMesses = readSubscription(subUrl).also {
+                    logger.info("获取订阅数据")
+                }.filter {
                     it.startsWith("vmess://")
                 }.map {
                     val decoder = Base64.getDecoder()
                     val json = Json(JsonConfiguration.Stable)
                     val body = decoder.decode(it.removePrefix("vmess://")).toString(Charsets.UTF_8)
 
+                    // 解析vmess链接
                     json.parse(VMess.serializer(), body).let { vmess ->
                         ClashVMess(
                             name = vmess.ps,
@@ -137,17 +143,21 @@ class V2ray2Clash : CliktCommand() {
                             } else {
                                 null
                             },
-                            wsHeaders = emptyMap(),
-                            skipCertVerify = false
+                            wsHeaders = mapOf("Host" to vmess.host),
+                            skipCertVerify = true
                         )
                     }
+                }.also {
+                    logger.info("解析订阅数据")
                 }
 
                 val proxyNames = clashVMesses.map {
                     it.name
                 }
 
-                loadTemplate().let {
+                loadTemplate().also {
+                    logger.info("加载配置模板")
+                }.let {
                     val proxyGroups = mutableListOf<ProxyGroup>().apply {
                         for (proxyGroup in it.proxyGroup) {
                             if ((proxyGroup.name == "Proxy")
@@ -195,7 +205,9 @@ class V2ray2Clash : CliktCommand() {
                         it.rule
                     )
                 }.run {
-                    save()
+                    save().also {
+                        logger.info("配置文件保存为config.yaml")
+                    }
                 }
             }
         } else {
@@ -203,14 +215,18 @@ class V2ray2Clash : CliktCommand() {
             exitProcess(1)
         }
     }
+
+    companion object {
+        val logger = LoggerFactory.getLogger(this::class.java)!!
+    }
 }
 
-suspend fun readSubscription(subUrl: String): List<String> {
-    val client = HttpClient()
-    val content = client.get<String>(subUrl)
-    return Base64.getDecoder().decode(content).toString(Charsets.UTF_8).split("\n")
+// 获取订阅数据
+suspend fun readSubscription(subUrl: String) = HttpClient().use {
+    Base64.getDecoder().decode(it.get<String>(subUrl)).toString(Charsets.UTF_8).split("\n")
 }
 
+// 加载配置模板
 suspend fun loadTemplate() = withContext(Dispatchers.IO) {
     javaClass.getResourceAsStream("/template.yaml").use {
         Yaml(configuration = YamlConfiguration(encodeDefaults = false)).parse(
@@ -220,6 +236,7 @@ suspend fun loadTemplate() = withContext(Dispatchers.IO) {
     }
 }
 
+//保存配置文件
 suspend fun ClashConfig.save() = withContext(Dispatchers.IO) {
     File("config.yaml").writeText(
         Yaml(configuration = YamlConfiguration(encodeDefaults = false)).stringify(
