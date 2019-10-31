@@ -1,4 +1,4 @@
-package com.hiarias
+package com.hiarias.v2ray2clash
 
 import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
